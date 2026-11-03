@@ -4235,6 +4235,29 @@ def vision_card_off_igpu(env: dict, archs: dict[int, str] | None = None) -> int 
     return own[-1]
 
 
+def vision_card_off_old(env: dict) -> int | None:
+    """NVIDIA: the picture reader is the ready-made CUDA 13 build and runs on the FIRST visible card.  On a layer split that starts on a
+    card older than compute 7.5 (a Maxwell / Pascal card on a source-built engine) it has no code there and stops with "no kernel image".
+    Returns the first visible card of 7.5 or newer (numbered like nvidia-smi), or None when the first card is new enough or nothing is known."""
+    vis = [x.strip() for x in str(env.get("CUDA_VISIBLE_DEVICES") or "").split(",") if x.strip().isdigit()]
+    if len(vis) < 2:
+        return None
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=index,compute_cap", "--format=csv,noheader"], capture_output=True, text=True,
+                           errors="replace", timeout=10)
+        cc = {i.strip(): float(c) for i, c in (ln.split(",") for ln in (r.stdout or "").strip().splitlines())}
+    except Exception:
+        return None
+    if vis[0] not in cc or cc[vis[0]] >= 7.5:
+        return None
+    new = [i for i in vis if cc.get(i, 0) >= 7.5]
+    if not new:
+        return None
+    print(f"[strata] the picture reader runs on GPU {new[0]}, not on GPU {vis[0]} (compute {cc[vis[0]]:.1f}, which it has no code for); "
+          "\"vision\": {\"cuda_device\": N} chooses another card", flush=True)
+    return int(new[0])
+
+
 def vision_env(cfg: dict, env: dict, archs: dict[int, str] | None = None) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
@@ -4242,6 +4265,8 @@ def vision_env(cfg: dict, env: dict, archs: dict[int, str] | None = None) -> dic
     dev = (cfg.get("vision") or {}).get("cuda_device")
     if dev is None and cfg.get("backend") == "hip":
         dev = vision_card_off_igpu(env, archs)
+    if dev is None and cfg.get("backend") != "hip":
+        dev = vision_card_off_old(env)
     if dev is None:
         return env
     env = dict(env)
