@@ -9,8 +9,11 @@
 > cmake --build build-cuda12 --target strata -j8
 > ```
 >
-> Use CUDA 12.x (13 cannot build for Maxwell) and list your cards' archs. To run it from the app, set `"exe"` in the model's
-> config to the built `strata`, plus `"gpu": [1, 0]`, `"layer_split": "auto"`, `"cuda": 12` for a split ([MULTI_GPU.md](docs/MULTI_GPU.md)).
+> Use CUDA 12.x (13 cannot build for Maxwell) and list your cards' archs. The app rewrites a hand-set `"exe"`, so to run it from the
+> app put the binary in an engine package with a higher version (`components/engine/<folder>/` with an `engine-component.json`
+> listing each file's sha256), and set `"gpu": [1, 0]`, `"layer_split": "auto"`, `"cuda": 12` in the model's config
+> ([MULTI_GPU.md](docs/MULTI_GPU.md)). The app's own `setup.py` and `serve/server.py` also need this branch's changes (control
+> component with a higher version in `components/control/`, named in `active.json`).
 >
 > Measured on one PC (Ubuntu, driver 580, CUDA 12.9, Coder IQ1_M, short coding prompt, greedy): M6000 alone about 25 tok/s,
 > its answer identical to the RTX 3090's; RTX 3090 + M6000 layer split about 59 tok/s, slower than the 3090 alone
