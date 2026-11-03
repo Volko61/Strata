@@ -40,6 +40,22 @@ __device__ __forceinline__ uint32_t prmt(const uint32_t a, const uint32_t b, con
     asm("prmt.b32 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(s));
     return d;
 }
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 530
+// Maxwell (sm_52) has no f16x2 arithmetic: each lane in fp32, rounded back to fp16. The lanes here hold integers
+// <= 2048 (above), so the fp32 result is exact and the rounding matches fma.rn.f16x2 / add.rn.f16x2 bit for bit
+__device__ __forceinline__ float h_lane(const uint32_t h, const int hi) {
+    return __half2float(__ushort_as_half((unsigned short) (hi ? h >> 16 : h & 0xFFFFu)));
+}
+__device__ __forceinline__ uint32_t h_pack(const float lo, const float hi) {
+    return (uint32_t) __half_as_ushort(__float2half_rn(lo)) | ((uint32_t) __half_as_ushort(__float2half_rn(hi)) << 16);
+}
+__device__ __forceinline__ uint32_t hfma2(const uint32_t a, const uint32_t b, const uint32_t c) {
+    return h_pack(fmaf(h_lane(a, 0), h_lane(b, 0), h_lane(c, 0)), fmaf(h_lane(a, 1), h_lane(b, 1), h_lane(c, 1)));
+}
+__device__ __forceinline__ uint32_t hadd2(const uint32_t a, const uint32_t b) {
+    return h_pack(h_lane(a, 0) + h_lane(b, 0), h_lane(a, 1) + h_lane(b, 1));
+}
+#else
 __device__ __forceinline__ uint32_t hfma2(const uint32_t a, const uint32_t b, const uint32_t c) {
     uint32_t d;
     asm("fma.rn.f16x2 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
@@ -50,6 +66,7 @@ __device__ __forceinline__ uint32_t hadd2(const uint32_t a, const uint32_t b) {
     asm("add.rn.f16x2 %0, %1, %2;" : "=r"(d) : "r"(a), "r"(b));
     return d;
 }
+#endif
 // the two fp16 lanes of h converted exactly to f32 and added
 __device__ __forceinline__ float h2sum(const uint32_t h) {
     float f;

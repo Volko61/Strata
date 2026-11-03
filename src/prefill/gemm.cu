@@ -890,7 +890,8 @@ bool dense_f32_on() {
     if (g_dense_f32 >= 0) return g_dense_f32 != 0;
     if (!env) return false;
     const int cc = current_cc();
-    return cc >= 60 && cc < 70;
+    return cc >= 52 && cc < 70;   // Maxwell too: like Pascal it has no fast FP16 path
+
 }
 // The smallest T taken for a weight of N rows and K columns (0: never): the measured shapes only - the 2560-column
 // qkv (10240 rows), query (12288) and gate (6144) projections and the 2560-row output projections (6144 and 4096

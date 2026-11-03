@@ -1,3 +1,21 @@
+> **This fork: Strata on Maxwell cards (Quadro M6000, GTX 900, compute 5.2).** Unofficial, three small changes on top of
+> upstream `ffa80d7`: the runtime floor of the experimental build goes from 6.0 to 5.2 (`src/core/device.cu`), a Maxwell-only
+> fp32 fallback for the f16x2 math in `src/prefill/moe_ws_down.cu` (same bits; the file did not compile for sm_52), and
+> `STRATA_DENSE_F32=1` also works on 5.2 (`src/prefill/gemm.cu`).
+>
+> ```sh
+> cmake -S . -B build-cuda12 -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
+>       -DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES="52;86" -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc
+> cmake --build build-cuda12 --target strata -j8
+> ```
+>
+> Use CUDA 12.x (13 cannot build for Maxwell) and list your cards' archs. To run it from the app, set `"exe"` in the model's
+> config to the built `strata`, plus `"gpu": [1, 0]`, `"layer_split": "auto"`, `"cuda": 12` for a split ([MULTI_GPU.md](docs/MULTI_GPU.md)).
+>
+> Measured on one PC (Ubuntu, driver 580, CUDA 12.9, Coder IQ1_M, short coding prompt, greedy): M6000 alone about 25 tok/s,
+> its answer identical to the RTX 3090's; RTX 3090 + M6000 layer split about 59 tok/s, slower than the 3090 alone
+> (110-130 tok/s), since IQ1_M already fits the 3090. A split should only pay for a model too big for one card (not tested).
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
