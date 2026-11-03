@@ -2,6 +2,7 @@
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_gguf.cu - a GGUF's BF16 matrices and MXFP4 experts on the device (see ds4_gguf.cuh).
 #include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
+#include "strata/kernels/dp4a.hpp"   // STRATA_DP4A: __dp4a, or its exact emulation below sm_61 (Maxwell)
 #include "ds4_gguf.cuh"
 #if defined(STRATA_METAL)
 #include <ds4_metal_host.h>
@@ -359,17 +360,17 @@ __device__ __forceinline__ int2 e2m1_x8(uint32_t q4) {
 __device__ __forceinline__ int mx_dot(const uint4& q, const int4& xa, const int4& xb) {
     int sum = 0;
     int2 v = e2m1_x8(q.x);
-    sum = __dp4a(v.x, xa.x, sum);
-    sum = __dp4a(v.y, xb.x, sum);
+    sum = STRATA_DP4A(v.x, xa.x, sum);
+    sum = STRATA_DP4A(v.y, xb.x, sum);
     v = e2m1_x8(q.y);
-    sum = __dp4a(v.x, xa.y, sum);
-    sum = __dp4a(v.y, xb.y, sum);
+    sum = STRATA_DP4A(v.x, xa.y, sum);
+    sum = STRATA_DP4A(v.y, xb.y, sum);
     v = e2m1_x8(q.z);
-    sum = __dp4a(v.x, xa.z, sum);
-    sum = __dp4a(v.y, xb.z, sum);
+    sum = STRATA_DP4A(v.x, xa.z, sum);
+    sum = STRATA_DP4A(v.y, xb.z, sum);
     v = e2m1_x8(q.w);
-    sum = __dp4a(v.x, xa.w, sum);
-    sum = __dp4a(v.y, xb.w, sum);
+    sum = STRATA_DP4A(v.x, xa.w, sum);
+    sum = STRATA_DP4A(v.y, xb.w, sum);
     return sum;
 }
 // the warp copies the blocks [b0, b0 + nbk) of a row (BB bytes each; the row 4-byte aligned, nbk BB % 4 == 0) into its
@@ -480,14 +481,14 @@ __global__ void __launch_bounds__(kThreads) q8_mv_kernel(const BfJobs J) {
             if (c < b.ncol) {
                 const int4* xp = (const int4*) (b.xq + (size_t) c * b.k + (size_t) kb * 32);
                 const int4 xa = xp[0], xb = xp[1];
-                int sum = __dp4a(v[0], xa.x, 0);
-                sum = __dp4a(v[1], xa.y, sum);
-                sum = __dp4a(v[2], xa.z, sum);
-                sum = __dp4a(v[3], xa.w, sum);
-                sum = __dp4a(v[4], xb.x, sum);
-                sum = __dp4a(v[5], xb.y, sum);
-                sum = __dp4a(v[6], xb.z, sum);
-                sum = __dp4a(v[7], xb.w, sum);
+                int sum = STRATA_DP4A(v[0], xa.x, 0);
+                sum = STRATA_DP4A(v[1], xa.y, sum);
+                sum = STRATA_DP4A(v[2], xa.z, sum);
+                sum = STRATA_DP4A(v[3], xa.w, sum);
+                sum = STRATA_DP4A(v[4], xb.x, sum);
+                sum = STRATA_DP4A(v[5], xb.y, sum);
+                sum = STRATA_DP4A(v[6], xb.z, sum);
+                sum = STRATA_DP4A(v[7], xb.w, sum);
                 acc[c] = fmaf(dw * b.xd[(size_t) c * nb + kb], (float) sum, acc[c]);
             }
     }
@@ -850,6 +851,10 @@ __global__ void __launch_bounds__(kThreads) mx_set_kernel(const SetK a) {
 // the same on the tensor cores: a block BM rows x BN outputs, 8 warps each 16 rows x 32 outputs (2 fragments, gate and
 // up: 4), a 32-value MXFP4 block of K a step (2 WMMA k-steps), the tiles in shared memory as F16
 #if !defined(STRATA_USE_HIP)
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700   // Maxwell / Pascal: no WMMA; never launched there (tc_ok() is per card)
+template <bool GATE_UP>
+__global__ void __launch_bounds__(kThreads) mx_set_tc_kernel(const SetK) { __trap(); }
+#else
 namespace wm = nvcuda::wmma;
 constexpr int kLdT = 40;   // halves a tile row (32 + 8: WMMA wants a multiple of 8; the pad spreads the banks)
 template <bool GATE_UP>
@@ -941,6 +946,7 @@ __global__ void __launch_bounds__(kThreads) mx_set_tc_kernel(const SetK a) {
         else a.y[lr * a.ldo + c0 + c] = O.g[r][c];
     }
 }
+#endif
 #endif
 #if defined(STRATA_USE_HIP)
 // the same on an AMD wave32 GPU's WMMA (RDNA3 / RDNA3.5 gfx11, RDNA4 gfx12): 8 waves each 16 rows x 32 outputs, the
@@ -1085,14 +1091,20 @@ bool tc_ok() {   // sm_70 and later (WMMA F16) / AMD gfx11, gfx12 (wave32 WMMA);
     }();
     return ok;
 #else
-    static const bool ok = [] {
-        int dev = 0, major = 0;
-        cudaGetDevice(&dev);
+    // per device, as ds4_iq.cu's: a split of a Maxwell / Pascal card and a newer one is two answers
+    static std::atomic<int> state[16];   // 0: unknown, 1: tensor cores, 2: the F32 kernel
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 16) return false;
+    int v = state[dev].load(std::memory_order_relaxed);
+    if (v == 0) {
+        int major = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
-        const char* v = std::getenv("STRATA_DS4_NO_TC");
-        return major >= 7 && !(v != nullptr && v[0] == '1');
-    }();
-    return ok;
+        const char* e = std::getenv("STRATA_DS4_NO_TC");
+        v = major >= 7 && !(e != nullptr && e[0] == '1') ? 1 : 2;
+        state[dev].store(v, std::memory_order_relaxed);
+    }
+    return v == 1;
 #endif
 }
 

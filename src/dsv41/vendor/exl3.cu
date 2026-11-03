@@ -81,10 +81,21 @@ void launch_check(const char* what) {
 
 // ---------------------------------------------------------------- the codebooks
 __device__ __forceinline__ uint32_t bytesum_plus(uint32_t x, uint32_t acc) {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || (defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610)   // (Maxwell has no __dp4a; the same sum)
     return acc + (x & 0xffu) + ((x >> 8) & 0xffu) + ((x >> 16) & 0xffu) + (x >> 24);
 #else
     return __dp4a(x, 0x01010101u, acc);
+#endif
+}
+
+// Maxwell (sm_52) has no half2 arithmetic: each lane in fp32, rounded back to fp16 (the product of two fp16 is exact in
+// fp32, so only the add can round twice - rare, and by one fp16 ulp at most)
+__device__ __forceinline__ __half2 hfma2_any(const __half2 a, const __half2 b, const __half2 c) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 530
+    const float2 fa = __half22float2(a), fb = __half22float2(b), fc = __half22float2(c);
+    return __floats2half2_rn(fmaf(fa.x, fb.x, fc.x), fmaf(fa.y, fb.y, fc.y));
+#else
+    return __hfma2(a, b, c);
 #endif
 }
 
@@ -95,7 +106,7 @@ __device__ __forceinline__ __half2 decode2h(uint32_t s0, uint32_t s1) {
         const uint32_t a = bytesum_plus(s0 * 0x83DCD12Du, 0x6400u);
         const uint32_t b = bytesum_plus(s1 * 0x83DCD12Du, 0x6400u);
         const __half2 h = __halves2half2(__ushort_as_half((unsigned short) a), __ushort_as_half((unsigned short) b));
-        return __hfma2(h, __half2half2(__ushort_as_half(0x1eee)), __half2half2(__ushort_as_half(0xc931)));
+        return hfma2_any(h, __half2half2(__ushort_as_half(0x1eee)), __half2half2(__ushort_as_half(0xc931)));
     } else {
         uint32_t x0 = cb == 1 ? s0 * 0xCBAC1FEDu : s0 * 89226354u + 64248484u;
         uint32_t x1 = cb == 1 ? s1 * 0xCBAC1FEDu : s1 * 89226354u + 64248484u;

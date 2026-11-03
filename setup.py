@@ -1746,7 +1746,6 @@ def cc(g) -> str:
 
 
 OLD_GPUS = None       # why Pascal / Volta cards are admitted in this run (old_gpus_opt_in), None: they are not
-DSV41_RUN = False     # a DeepSeek-V4.1 run: its engine (strata-dsv41) is built for sm_86+ only, so no Maxwell card
 
 
 def experimental_sm60() -> bool:
@@ -1884,7 +1883,7 @@ def config_toolkit(cfg: dict) -> int:
 
 def gpu_problem(g, together=False):
     """Why Strata cannot use this card, in plain words (None: it can)."""
-    if int(g["arch"]) < 75 and not ((sm60_card(g["arch"]) or (maxwell_card(g["arch"]) and not DSV41_RUN)) and experimental_sm60()):
+    if int(g["arch"]) < 75 and not ((sm60_card(g["arch"]) or maxwell_card(g["arch"])) and experimental_sm60()):
         return (f"not supported - older than the RTX 20 series (compute capability {cc(g)}; Strata needs 7.5 or "
                 "newer" + ("; experimental: choose it with --gpu " + str(g["index"]) + " (the CUDA 12 engine, "
                           "docs/OLDER_GPUS.md)" if sm60_card(g["arch"]) else
@@ -7406,8 +7405,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
                 ok(f"GPU: {g['name']} ({g['vram_gb']:.0f} GB, AMD)")
     else:
         found = gpus()
-        global OLD_GPUS, DSV41_RUN                     # Pascal / Volta: named on this start, or this model's CUDA 12 engine
-        DSV41_RUN = cfg.get("arch") == "deepseek41"
+        global OLD_GPUS                                # Pascal / Volta: named on this start, or this model's CUDA 12 engine
         OLD_GPUS = OLD_GPUS or old_gpus_opt_in(found, gpu if isinstance(gpu, list) else [gpu] if gpu is not None else
                                                cfg.get("gpu") if isinstance(cfg.get("gpu"), list) else [cfg.get("gpu")],
                                                12 if config_toolkit(cfg) == 12 else None)
@@ -9814,7 +9812,7 @@ def main() -> int:
                     if earlier_card_kept(prev):
                         a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
                 a.yes = True
-    global GPU_PICK, OLD_GPUS, DSV41_RUN
+    global GPU_PICK, OLD_GPUS
     # starting an installed model: --gpus 0,2 (or all) saves those cards for it and starts on them (it used to start
     # on the first one alone unless given with --setup), --gpu N runs this start on one card; neither: the saved
     # choice, and asked once when the PC has cards that could share the model
@@ -9868,7 +9866,6 @@ def main() -> int:
     # ---- 1. the PC
     step(1, "checking your PC")
     found = gpus()
-    DSV41_RUN = a.family == "deepseek41"
     amd = amd_gpus()
     amd_ok = [g for g in amd if amd_problem(g) is None]
     # older NVIDIA GPUs (Pascal / Volta): the experimental CUDA 12 engine, when chosen (docs/OLDER_GPUS.md)

@@ -3,6 +3,7 @@
 // src/ds4/ds4_iq.cu - a GGUF's low-bit routed experts on the device (see ds4_iq.cuh).  The block layouts and grids are
 // ggml's (ggml-common.h, MIT, third_party/ggml/LICENSE); the sign and grid tricks are llama.cpp's vecdotq.cuh.
 #include "ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
+#include "strata/kernels/dp4a.hpp"   // STRATA_DP4A: __dp4a, or its exact emulation below sm_61 (Maxwell)
 #include "ds4_iq.cuh"
 #if defined(STRATA_METAL)
 #include <ds4_metal_host.h>
@@ -356,24 +357,24 @@ __device__ __forceinline__ void decode(const uint8_t* __restrict__ row, int kb, 
 // its scales in F32 (explicit roundings: every instantiation the same bits)
 template <int T>
 __device__ __forceinline__ float sub_dot(const Sub& s, const int4& xa, const int4& xb) {
-    int lo = __dp4a(s.q[0], xa.x, 0);
-    lo = __dp4a(s.q[1], xa.y, lo);
-    lo = __dp4a(s.q[2], xa.z, lo);
-    lo = __dp4a(s.q[3], xa.w, lo);
-    int hi = __dp4a(s.q[4], xb.x, 0);
-    hi = __dp4a(s.q[5], xb.y, hi);
-    hi = __dp4a(s.q[6], xb.z, hi);
-    hi = __dp4a(s.q[7], xb.w, hi);
+    int lo = STRATA_DP4A(s.q[0], xa.x, 0);
+    lo = STRATA_DP4A(s.q[1], xa.y, lo);
+    lo = STRATA_DP4A(s.q[2], xa.z, lo);
+    lo = STRATA_DP4A(s.q[3], xa.w, lo);
+    int hi = STRATA_DP4A(s.q[4], xb.x, 0);
+    hi = STRATA_DP4A(s.q[5], xb.y, hi);
+    hi = STRATA_DP4A(s.q[6], xb.z, hi);
+    hi = STRATA_DP4A(s.q[7], xb.w, hi);
     float v = __fmul_rn(s.d, (float) (s.s0 * lo + s.s1 * hi));
     if constexpr (Ty<T>::MIN) {
-        int sl = __dp4a(0x01010101, xa.x, 0);
-        sl = __dp4a(0x01010101, xa.y, sl);
-        sl = __dp4a(0x01010101, xa.z, sl);
-        sl = __dp4a(0x01010101, xa.w, sl);
-        int sh = __dp4a(0x01010101, xb.x, 0);
-        sh = __dp4a(0x01010101, xb.y, sh);
-        sh = __dp4a(0x01010101, xb.z, sh);
-        sh = __dp4a(0x01010101, xb.w, sh);
+        int sl = STRATA_DP4A(0x01010101, xa.x, 0);
+        sl = STRATA_DP4A(0x01010101, xa.y, sl);
+        sl = STRATA_DP4A(0x01010101, xa.z, sl);
+        sl = STRATA_DP4A(0x01010101, xa.w, sl);
+        int sh = STRATA_DP4A(0x01010101, xb.x, 0);
+        sh = STRATA_DP4A(0x01010101, xb.y, sh);
+        sh = STRATA_DP4A(0x01010101, xb.z, sh);
+        sh = STRATA_DP4A(0x01010101, xb.w, sh);
         v = __fsub_rn(v, __fadd_rn(__fmul_rn(s.m0, (float) sl), __fmul_rn(s.m1, (float) sh)));
     }
     return v;
@@ -814,6 +815,10 @@ __global__ void __launch_bounds__(kThreads) set_kernel(const SetArgs a) {
 }
 
 #if !defined(STRATA_USE_HIP)
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700   // Maxwell / Pascal: no WMMA; never launched there (tc_ok() is per card)
+template <int T, bool GATE_UP>
+__global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs) { __trap(); }
+#else
 // the same on the tensor cores (sm_70+): 8 warps each 16 rows x 32 outputs, the tiles F16 in shared memory
 namespace wm = nvcuda::wmma;
 constexpr int kLdT = 40;
@@ -900,6 +905,7 @@ __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
         else a.y[lr * a.ldo + c0 + c] = O.g[r][c];
     }
 }
+#endif
 #endif
 
 // ---------------------------------------------------------------- GEMVs
