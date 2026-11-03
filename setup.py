@@ -1784,7 +1784,7 @@ def old_gpus_opt_in(found, named=(), cuda=None, other=False):
     the user named one (`named`: --gpu / --gpus), asked for --cuda 12, set STRATA_EXPERIMENTAL_SM60=1, or the PC has
     no card the ready-made engine runs on and no supported AMD card (`other`; it used to stop there).  A PC with a
     newer card keeps recommending it."""
-    old = [g for g in found if sm60_card(g["arch"])]
+    old = [g for g in found if sm60_card(g["arch"]) or maxwell_card(g["arch"])]   # Maxwell: a source-built CUDA 12 engine
     if not old:
         return None
     if os.environ.get("STRATA_EXPERIMENTAL_SM60", "").strip() == "1":
@@ -1883,7 +1883,7 @@ def config_toolkit(cfg: dict) -> int:
 
 def gpu_problem(g, together=False):
     """Why Strata cannot use this card, in plain words (None: it can)."""
-    if int(g["arch"]) < 75 and not (sm60_card(g["arch"]) and experimental_sm60()):
+    if int(g["arch"]) < 75 and not ((sm60_card(g["arch"]) or maxwell_card(g["arch"])) and experimental_sm60()):
         return (f"not supported - older than the RTX 20 series (compute capability {cc(g)}; Strata needs 7.5 or "
                 "newer" + ("; experimental: choose it with --gpu " + str(g["index"]) + " (the CUDA 12 engine, "
                           "docs/OLDER_GPUS.md)" if sm60_card(g["arch"]) else
