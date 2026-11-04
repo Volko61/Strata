@@ -935,8 +935,6 @@ class InstallSmallest(InstallOfficial):
         self.assertEqual(a[a.index("--dspark") + 1], "auto")
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class PicturesByDefault(Install):
@@ -1286,3 +1284,67 @@ class CardGate(Install):
 for _cls in (PackCheck, CardGate):          # (they reuse Install's set-up, not its tests)
     for _name in [n for n in dir(Install) if n.startswith("test_")]:
         setattr(_cls, _name, None)
+
+
+CMP170HX = {"name": "NVIDIA CMP 170HX", "vram_gb": 40.0, "vendor": "nvidia", "arch": "80"}
+
+
+class LocalBuild(unittest.TestCase):
+    """This fork: an NVIDIA card no ready-made DeepSeek package holds code for (a CMP 170HX, sm_80) gets strata-dsv41 compiled from the
+    checkout (build_dsv41_engine, mocked here); a covered card (sm_86) keeps the package, and STRATA_DSV41_EXE still wins."""
+    setUp = Install.setUp
+
+    def nvidia(self, cards, engine_built=True, **kw):
+        (self.root / "src").mkdir(exist_ok=True)               # a source checkout
+        built = []
+
+        def fake_build(eng, cs, yes, toolkit=None):
+            built.append([c["arch"] for c in cs])
+            if engine_built:
+                self.exe.parent.mkdir(parents=True, exist_ok=True)
+                self.exe.write_text("x")
+            return self.exe, ["/usr/local/cuda-12.9/lib64"]
+        kw.setdefault("model", "UD-Q8_K_XL")
+        kw.setdefault("vision", "no")
+        gpu = {"index": 0, "count": len(cards), "vram_gb": cards[0]["vram_gb"], "name": cards[0]["name"], "cards": cards}
+        with mock.patch.object(setup, "build_dsv41_engine", fake_build), \
+             mock.patch.object(setup, "get_dsv41_engine", lambda *a, **k: self.calls.append(("fetch",))):
+            rc, out = run(setup.install_dsv41, args(models_dir=str(self.root / "models"), **kw), "deepseek41", gpu, False, [], 12, [], 8080,
+                          251.0, None, cards)
+        return rc, out, built
+
+    def test_sm80_is_compiled_not_fetched(self):
+        rc, out, built = self.nvidia([{**CMP170HX, "index": 0}])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(built, [["80"]])
+        self.assertFalse([c for c in self.calls if c[0] == "fetch"])
+        self.assertIn("NVIDIA CMP 170HX (sm_80): no ready-made DeepSeek engine package", out)
+        self.assertEqual(self.cfg["exe"], str(self.exe))
+        self.assertIn("/usr/local/cuda-12.9/lib64", self.cfg["lib_dirs"])
+
+    def test_a_covered_card_keeps_the_package(self):
+        rc, out, built = self.nvidia([{**CMP170HX, "name": "NVIDIA GeForce RTX 3090", "vram_gb": 24.0, "arch": "86", "index": 0}])
+        self.assertEqual(built, [])
+        self.assertTrue([c for c in self.calls if c[0] == "fetch"])
+
+    def test_own_build_wins(self):
+        own = self.root / "mine" / "strata-dsv41"
+        own.parent.mkdir()
+        own.write_text("x")
+        with mock.patch.dict("os.environ", {"STRATA_DSV41_EXE": str(own)}):
+            rc, out, built = self.nvidia([{**CMP170HX, "index": 0}])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(built, [])
+        self.assertEqual(self.cfg["exe"], str(own))
+
+    def test_uncovered_archs(self):
+        arch = lambda *xs: setup.dsv41_uncovered_archs([{"arch": x} for x in xs])  # noqa: E731
+        self.assertEqual(arch("80"), [80])
+        self.assertEqual(arch("86", "80"), [80])
+        self.assertEqual(arch("86"), [])
+        self.assertEqual(arch("89"), [])
+        self.assertEqual(arch("120"), [])
+        self.assertEqual(arch("gfx1201"), [])
+
+if __name__ == "__main__":
+    unittest.main()

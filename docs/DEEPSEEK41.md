@@ -229,7 +229,10 @@ cmake -S . -B build-dsv41 -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CU
 cmake --build build-dsv41 --target strata-dsv41 -j 8
 ```
 
-Use your card's number in `CMAKE_CUDA_ARCHITECTURES`: 86 for RTX 30, 89 for RTX 40, 120 for RTX 50, or `native` for the cards in this computer. Without the
+This fork: setup run from a source checkout does this by itself for an NVIDIA card the packages do not cover (a CMP 170HX or A100, sm_80; Maxwell sm_52),
+or for any NVIDIA card with `--build`; the result is `engine/strata-dsv41` with a stamp in `engine/BUILD-dsv41.json`.
+
+Use your card's number in `CMAKE_CUDA_ARCHITECTURES`: 80 for a CMP 170HX / A100, 86 for RTX 30, 89 for RTX 40, 120 for RTX 50, or `native` for the cards in this computer. Without the
 option a DeepSeek build is made for 86, 89 and 120. On Windows, `packaginguild_dsv41_windows.bat BUILD_DIR` does the same (`DSV41_ARCH` names the cards);
 on Linux, `packaging/build_dsv41_cuda.sh` (`ARCH=...`). Then copy the file into the `engine` folder of your Strata install (next to `strata`); setup finds it there and does not download an engine:
 

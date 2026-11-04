@@ -18,6 +18,22 @@
 > Measured on one PC (Ubuntu, driver 580, CUDA 12.9, Coder IQ1_M, short coding prompt, greedy): M6000 alone about 25 tok/s,
 > its answer identical to the RTX 3090's; RTX 3090 + M6000 layer split about 59 tok/s, slower than the 3090 alone
 > (110-130 tok/s), since IQ1_M already fits the 3090. A split should only pay for a model too big for one card (not tested).
+>
+> **NVIDIA CMP 170HX (sm_80, GA100), stock or unlocked, and DeepSeek V4.1.** No ready-made DeepSeek engine package holds code for
+> sm_80 (the packages are sm_86, sm_89, sm_120), so upstream stops with "DeepSeek's engine is not available for this computer yet". In
+> this fork, setup run from a source checkout compiles `strata-dsv41` for such a card itself and uses it (`engine/strata-dsv41`, stamped
+> in `engine/BUILD-dsv41.json`, compiled again only when the source changes or a new card appears). It needs the CUDA toolkit (12.x or
+> 13.x) and a C++ compiler:
+>
+> ```sh
+> ./setup.sh --family deepseek41 --model ISTA-DAS-Coder     # or any DeepSeek set; --build forces the compile on any NVIDIA card
+> ```
+>
+> Setup reads the card's memory from nvidia-smi, so an unlocked card (cmpunlocker: 40 GB, or 80 GB, which its author marks
+> unverified) gets more experts in graphics memory with no extra setting. Run the unlock *before* setup and before each start: the
+> unlock is lost at power-off, and a plan made for 40 GB on a card back at 10 GB runs out of memory. The 170HX's PCIe link is narrow
+> (Gen1/Gen2 x4 on most cards), so experts left in RAM are slow to reach. Built here for sm_80 with CUDA 12.9 (it compiles); not run
+> on a CMP 170HX by us, so no speed is claimed.
 
 <p align="center">
   <picture>

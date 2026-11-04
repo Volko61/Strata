@@ -8480,6 +8480,71 @@ def dsv41_exe(eng: Path) -> Path | None:
     return exe if exe.is_file() else None
 
 
+#: What the release's NVIDIA DeepSeek engine packages hold code for (packaging/build_dsv41_cuda.sh: SASS sm_86, sm_89, sm_120 + PTX 120).
+DSV41_RELEASE_CUDA_ARCHS = ("sm_86", "sm_89", "sm_120", "compute_120")
+DSV41_LOCAL_STAMP = "BUILD-dsv41.json"
+
+
+def dsv41_uncovered_archs(cards) -> list[int]:
+    """This fork: the NVIDIA cards (compute capability as a number, 80 for a CMP 170HX / A100) that no ready-made DeepSeek engine package
+    can run (engine_component.arch_covers: sm_86 code does not run on sm_80, PTX 120 not below it). Empty: the release package is used."""
+    from strata_control import engine_component as ec
+    out = []
+    for c in cards or []:
+        arch = str(c.get("arch") or "")
+        if arch.isdigit() and not ec.arch_covers(DSV41_RELEASE_CUDA_ARCHS, [f"sm_{arch}"]):
+            out.append(int(arch))
+    return sorted(set(out))
+
+
+def dsv41_local_build(eng: Path) -> dict:
+    """The stamp of a DeepSeek engine this setup compiled (engine/BUILD-dsv41.json), {} when there is none."""
+    try:
+        return json.loads((Path(eng) / DSV41_LOCAL_STAMP).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def build_dsv41_engine(eng: Path, cards, yes: bool, toolkit=None) -> tuple[Path, list]:
+    """This fork: compile strata-dsv41 for the cards in `cards` (and every other usable card in the PC, as build_engine does) when no ready-made
+    DeepSeek package holds code for them - the CMP 170HX (sm_80, GA100; 40-80 GB once unlocked) and the other cards outside sm_86 / sm_89 /
+    sm_120. The binary goes to engine/strata-dsv41 (dsv41_exe finds it there) with a stamp of its source and architectures; a stamp that
+    matches skips the compile. Returns (the binary, the toolkit's library folders for the config's lib_dirs)."""
+    acquisition.require("a DeepSeek engine build")
+    eng = Path(eng)
+    eng.mkdir(exist_ok=True)
+    name = "strata-dsv41.exe" if WIN else "strata-dsv41"
+    archs = local_build_archs([int(c["arch"]) for c in cards if str(c.get("arch") or "").isdigit()], gpus())
+    if toolkit is None:
+        toolkit = 12 if min(archs) < CUDA13_MIN_ARCH else 13
+    src = source_hash(ENGINE_SOURCES)
+    meta = dsv41_local_build(eng)
+    built = set(arch_numbers(meta.get("archs")))
+    if (eng / name).is_file() and meta.get("src") == src and set(archs) <= built:
+        ok("DeepSeek engine already built for this PC (" + ", ".join(f"sm_{x}" for x in sorted(built)) + ")")
+        return eng / name, list(meta.get("cuda_dirs") or [])
+    archs = sorted(built | set(archs)) if (eng / name).is_file() else archs
+    nvcc, vcvars = install_build_tools({"arch": archs[0], "archs": archs, "toolkit": toolkit}, yes)
+    bdir = ROOT / ("build-dsv41-cuda12" if int(toolkit) == 12 else "build-dsv41")
+    say("  No ready-made DeepSeek engine holds code for " + ", ".join(f"sm_{x}" for x in archs) +
+        ": compiling strata-dsv41 for it (20-40 minutes, once) ...")
+    cmake_build(ROOT, bdir, "strata-dsv41",
+                ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", "-DSTRATA_BUILD_DSV41=ON", "-DSTRATA_NATIVE_EXPERTS=ON",
+                 "-DCMAKE_CUDA_ARCHITECTURES=" + ";".join(str(x) for x in archs), f"-DCMAKE_CUDA_COMPILER={nvcc}",
+                 *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={get_llama_cpp()}", *host_compiler_defs(True),
+                 *engine_defs(archs, toolkit)],
+                vcvars, "build-dsv41-cuda12.bat" if int(toolkit) == 12 else "build-dsv41.bat")
+    if not (bdir / name).is_file():
+        fail(f"the DeepSeek engine build finished without {name} in {bdir}", f"delete {bdir} and run setup again")
+    shutil.copy2(bdir / name, eng / name)
+    bindir = Path(nvcc).parent                            # the toolkit's own libraries (cudart, cuBLAS): bin, bin/x64, lib64
+    dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
+    (eng / DSV41_LOCAL_STAMP).write_text(json.dumps({"source": "local", "archs": [f"sm_{x}" for x in archs], "toolkit": int(toolkit),
+                                                     "cuda_dirs": dirs, "src": src}, indent=1), encoding="utf-8")
+    ok(f"DeepSeek engine compiled: {eng / name}")
+    return eng / name, dirs
+
+
 def dsv41_folder(a, fam: dict, tag: str, model: str = "UD-Q8_K_XL") -> Path:
     """Where the model's shards are: --gguf-dir (a folder with the shards, or the repository's folder with the set's own folder inside:
     UD-Q8_K_XL, 2.00bpw, 2.25bpw), else the models folder's own."""
@@ -9050,6 +9115,17 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     step(4, "the DeepSeek engine")
     eng, meta, lib_dirs = ROOT / "engine", {"version": None}, []
     exe = dsv41_exe(eng)
+    # This fork: an NVIDIA card no ready-made DeepSeek package holds code for (a CMP 170HX, sm_80 - unlocked to 40-80 GB it can hold much of the
+    # model; a Quadro M6000, sm_52) gets strata-dsv41 compiled here from this checkout, as --build does for any card. A build of your own
+    # (STRATA_DSV41_EXE) or a package you gave (--dsv41-package) still wins.
+    uncovered = [] if hip or mac else dsv41_uncovered_archs(cards)
+    if (not hip and not mac and (uncovered or getattr(a, "build", False)) and not (os.environ.get("STRATA_DSV41_EXE") or "").strip()
+            and not getattr(a, "dsv41_package", None) and (ROOT / "src").is_dir()):
+        if uncovered:
+            say("  " + ", ".join(f"{c['name']} (sm_{c['arch']})" for c in cards if str(c.get('arch') or '').isdigit() and int(c['arch']) in uncovered) +
+                ": no ready-made DeepSeek engine package holds code for this card, so it is compiled from this Strata checkout.")
+        exe, built_dirs = build_dsv41_engine(eng, cards, a.yes, toolkit=12 if cuda_tk == 12 else None)
+        lib_dirs = [*lib_dirs, *built_dirs]
     if (exe is None and not getattr(a, "dsv41_package", None) and not dsv41_engine_pending(eng) and not local_feed(getattr(a, "feed", None))
         and not github_reachable()):
         fail("Strata can't reach GitHub to download the DeepSeek engine.",
@@ -9084,6 +9160,9 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
              ("It runs on an Apple Silicon Mac with the Metal DeepSeek engine package from the Strata update feed. " if mac else
               "Supported graphics cards: NVIDIA RTX 30, 40 and 50 series, the Radeon AI PRO R9700, and a Ryzen AI Max (Strix Halo) on "
               "Windows with the AMD DeepSeek engine package. "
+              + ("Other NVIDIA cards (a CMP 170HX, sm_80, among them) get the engine compiled for them when setup runs from a source checkout "
+                 "of this fork (git clone, then ./setup.sh --family deepseek41; it needs the CUDA toolkit and a C++ compiler). "
+                 if not hip and dsv41_uncovered_archs(cards) else "")
               + ("The DGX Spark (GB10) builds its own: spark/build_engine.sh puts strata-dsv41 beside the engine (docs/DGX_SPARK_LINUX.md). "
                  if is_arm64() else "")) + dsv41_manual_steps(eng)
              + " Or update Strata later (a newer version may add your card), pick another model, or build the engine for your card yourself "
