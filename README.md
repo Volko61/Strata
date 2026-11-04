@@ -19,6 +19,10 @@
 > its answer identical to the RTX 3090's; RTX 3090 + M6000 layer split about 59 tok/s, slower than the 3090 alone
 > (110-130 tok/s), since IQ1_M already fits the 3090. A split should only pay for a model too big for one card (not tested).
 >
+> **DeepSeek V4.1 on Maxwell.** The DeepSeek engine builds for sm_52 too (`-DSTRATA_BUILD_DSV41=ON`); a Maxwell build caches global
+> loads in L1, which these kernels need. ISTA-DAS Coder pack, 31 GB RAM, same coding request: RTX 3090 + M6000 8.97 tok/s, 3090 alone
+> 7.22, M6000 alone 5.57. Report with charts: **https://volko61.github.io/Strata/** (also [reports/deepseek-3090-m6000.html](reports/deepseek-3090-m6000.html)).
+>
 > **NVIDIA CMP 170HX (sm_80, GA100), stock or unlocked, and DeepSeek V4.1.** No ready-made DeepSeek engine package holds code for
 > sm_80 (the packages are sm_86, sm_89, sm_120), so upstream stops with "DeepSeek's engine is not available for this computer yet". In
 > this fork, setup run from a source checkout compiles `strata-dsv41` for such a card itself and uses it (`engine/strata-dsv41`, stamped
