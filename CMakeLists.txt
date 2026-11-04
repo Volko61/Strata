@@ -289,6 +289,22 @@ elseif(STRATA_ENABLE_CUDA)
     # build only, so the ready-made engine (sm_75+) keeps exactly the code it had
     add_compile_definitions(STRATA_EXPERIMENTAL_SM60=1)
   endif()
+  # Maxwell keeps plain global loads out of L1, so a GEMV's small, re-read weight loads each go to L2 (sm_70 and newer
+  # cache them in L1 already).  -dlcm=ca caches them.  Measured on a Quadro M6000 (DeepSeek, 128 decode tokens):
+  # attention 479 -> 50 ms a token, 1.25 -> 3.47 tok/s, the same tokens out.  On by default for a build with a
+  # Maxwell architecture; Pascal is not measured, so it stays opt-in there
+  set(_strata_l1_default OFF)
+  foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
+    string(REGEX REPLACE "-.*$" "" _base "${_a}")
+    if(_base MATCHES "^[0-9]+$" AND _base LESS 60)
+      set(_strata_l1_default ON)
+    endif()
+  endforeach()
+  option(STRATA_MAXWELL_L1_CACHE "Cache global loads in L1 (-Xptxas -dlcm=ca) for every CUDA source" ${_strata_l1_default})
+  if(STRATA_MAXWELL_L1_CACHE)
+    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-dlcm=ca>)
+    message(STATUS "Strata: global loads cached in L1 (-Xptxas -dlcm=ca)")
+  endif()
   message(STATUS "Strata: CUDA enabled, arch ${CMAKE_CUDA_ARCHITECTURES}")
   set(_strata_gpu_runtime_target CUDA::cudart)
   set(_strata_gpu_blas_target CUDA::cublas)
@@ -955,24 +971,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       set(STRATA_BUILD_ID unknown)
     endif()
     set_source_files_properties(src/dsv41/ds4_main.cpp PROPERTIES COMPILE_DEFINITIONS "DS4_BUILD_ID=\"${STRATA_BUILD_ID}\"")
-    # Maxwell (sm_52) keeps plain global loads out of L1; the GEMVs' small scattered weight reads then each go to L2.
-    # -dlcm=ca caches them in L1 (sm_70 and newer cache them already).  Measured on a Quadro M6000, 128 decode tokens:
-    # attention 479 -> 50 ms a token, the whole token 1.25 -> 3.47 tok/s, the same tokens out.  On by default for a build
-    # with an architecture below sm_70; a build for newer cards only is unchanged
-    set(_strata_dsv41_l1_default OFF)
-    foreach(_a IN LISTS CMAKE_CUDA_ARCHITECTURES)
-      string(REGEX REPLACE "-.*$" "" _base "${_a}")
-      if(_base MATCHES "^[0-9]+$" AND _base LESS 70)
-        set(_strata_dsv41_l1_default ON)
-      endif()
-    endforeach()
-    option(STRATA_DSV41_L1_CACHE "Build the DeepSeek kernels with -Xptxas -dlcm=ca (global loads cached in L1 on Maxwell)"
-           ${_strata_dsv41_l1_default})
-    if(STRATA_DSV41_L1_CACHE AND NOT STRATA_ENABLE_HIP)
-      set_source_files_properties(src/dsv41/ds4_iq.cu src/dsv41/ds4_gguf.cu src/dsv41/ds4_kernels.cu src/dsv41/ds4_model.cu
-                                  src/dsv41/ds4_tq.cu src/dsv41/vendor/exl3.cu src/dsv41/vendor/exl3_legacy.cu
-                                  PROPERTIES COMPILE_OPTIONS "-Xptxas=-dlcm=ca")
-    endif()
     target_include_directories(strata-dsv41 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories}
                                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill)
     # strata_prefill: the RDNA3 WMMA dense GEMM (src/prefill/wmma_gemm.cu), which gemm() prefers over hipBLAS on gfx11 (measured
